@@ -2,12 +2,18 @@ using System;
 using System.ComponentModel;
 using Android.Content;
 using Android.Graphics;
+#if __ANDROID_29__
+using AndroidX.AppCompat.Widget;
+using AndroidX.RecyclerView.Widget;
+using AViewCompat = AndroidX.Core.View.ViewCompat;
+#else
 using Android.Support.V7.Widget;
+using AViewCompat = Android.Support.V4.View.ViewCompat;
+#endif
 using Android.Views;
 using Xamarin.Forms.Internals;
 using Xamarin.Forms.Platform.Android.CollectionView;
 using Xamarin.Forms.Platform.Android.FastRenderers;
-using AViewCompat = Android.Support.V4.View.ViewCompat;
 
 namespace Xamarin.Forms.Platform.Android
 {
@@ -42,8 +48,6 @@ namespace Xamarin.Forms.Platform.Android
 
 		public ItemsViewRenderer(Context context) : base(new ContextThemeWrapper(context, Resource.Style.collectionViewStyle))
 		{
-			Xamarin.Forms.CollectionView.VerifyCollectionViewFlagEnabled(nameof(ItemsViewRenderer<TItemsView, TAdapter, TItemsViewSource>));
-
 			_automationPropertiesProvider = new AutomationPropertiesProvider(this);
 			_effectControlProvider = new EffectControlProvider(this);
 
@@ -207,14 +211,13 @@ namespace Xamarin.Forms.Platform.Android
 		{
 			ElementPropertyChanged?.Invoke(this, changedProperty);
 
-			// TODO hartez 2018/10/24 10:41:55 If the ItemTemplate changes from set to null, we need to make sure to clear the recyclerview pool	
-
 			if (changedProperty.Is(Xamarin.Forms.ItemsView.ItemsSourceProperty))
 			{
 				UpdateItemsSource();
 			}
 			else if (changedProperty.Is(Xamarin.Forms.ItemsView.ItemTemplateProperty))
 			{
+				GetRecycledViewPool().Clear();
 				UpdateAdapter();
 			}
 			else if (changedProperty.Is(VisualElement.BackgroundColorProperty))
@@ -229,10 +232,6 @@ namespace Xamarin.Forms.Platform.Android
 				Xamarin.Forms.ItemsView.EmptyViewTemplateProperty))
 			{
 				UpdateEmptyView();
-			}
-			else if (changedProperty.Is(Xamarin.Forms.ItemsView.ItemSizingStrategyProperty))
-			{
-				UpdateAdapter();
 			}
 			else if (changedProperty.Is(Xamarin.Forms.ItemsView.HorizontalScrollBarVisibilityProperty))
 			{
@@ -266,6 +265,7 @@ namespace Xamarin.Forms.Platform.Android
 			UpdateItemsUpdatingScrollMode();
 
 			UpdateEmptyView();
+			AddOrUpdateScrollListener();
 		}
 
 		protected virtual TAdapter CreateAdapter()
@@ -273,7 +273,7 @@ namespace Xamarin.Forms.Platform.Android
 			return (TAdapter)new ItemsViewAdapter<TItemsView, TItemsViewSource>(ItemsView);
 		}
 
-		void UpdateAdapter()
+		protected virtual void UpdateAdapter()
 		{
 			var oldItemViewAdapter = ItemsViewAdapter;
 
@@ -281,7 +281,11 @@ namespace Xamarin.Forms.Platform.Android
 
 			if (GetAdapter() != _emptyViewAdapter)
 			{
+				_emptyCollectionObserver.Stop(oldItemViewAdapter);
+				_itemsUpdateScrollObserver.Stop(oldItemViewAdapter);
+	
 				SetAdapter(null);
+	
 				SwapAdapter(ItemsViewAdapter, true);
 			}
 
@@ -330,8 +334,7 @@ namespace Xamarin.Forms.Platform.Android
 			// Listen for ScrollTo requests
 			ItemsView.ScrollToRequested += ScrollToRequested;
 
-			_recyclerViewScrollListener = CreateScrollListener();
-			AddOnScrollListener(_recyclerViewScrollListener);
+			AddOrUpdateScrollListener();
 		}
 
 		protected virtual RecyclerViewScrollListener<TItemsView, TItemsViewSource> CreateScrollListener()
@@ -387,12 +390,7 @@ namespace Xamarin.Forms.Platform.Android
 			// Stop listening for ScrollTo requests
 			oldElement.ScrollToRequested -= ScrollToRequested;
 
-			if (_recyclerViewScrollListener != null)
-			{
-				_recyclerViewScrollListener.Dispose();
-				ClearOnScrollListeners();
-				_recyclerViewScrollListener = null;
-			}
+			RemoveScrollListener();
 
 			if (ItemsViewAdapter != null)
 			{
@@ -495,6 +493,15 @@ namespace Xamarin.Forms.Platform.Android
 					_emptyViewAdapter = new EmptyViewAdapter(ItemsView);
 				}
 
+				if (ItemsView is StructuredItemsView structuredItemsView)
+				{
+					_emptyViewAdapter.Header = structuredItemsView.Header;
+					_emptyViewAdapter.HeaderTemplate = structuredItemsView.HeaderTemplate;
+
+					_emptyViewAdapter.Footer = structuredItemsView.Footer;
+					_emptyViewAdapter.FooterTemplate = structuredItemsView.FooterTemplate;
+				}
+
 				_emptyViewAdapter.EmptyView = emptyView;
 				_emptyViewAdapter.EmptyViewTemplate = emptyViewTemplate;
 
@@ -538,17 +545,6 @@ namespace Xamarin.Forms.Platform.Android
 			if (linearLayoutManager.CanScrollVertically())
 			{
 				return;
-			}
-
-			var effectiveFlowDirection = ((IVisualElementController)Element).EffectiveFlowDirection;
-
-			if (effectiveFlowDirection.IsRightToLeft())
-			{
-				linearLayoutManager.ReverseLayout = true;
-			}
-			else if (effectiveFlowDirection.IsLeftToRight())
-			{
-				linearLayoutManager.ReverseLayout = false;
 			}
 		}
 
@@ -619,7 +615,16 @@ namespace Xamarin.Forms.Platform.Android
 				return;
 			}
 
-			var showEmptyView = ItemsView?.EmptyView != null && ItemsViewAdapter.ItemCount == 0;
+			int itemCount = 0;
+			if(ItemsView is StructuredItemsView itemsView)
+			{
+				if (itemsView.Header != null || itemsView.HeaderTemplate != null)
+					itemCount++;
+				if (itemsView.Footer != null || itemsView.FooterTemplate != null)
+					itemCount++;
+			}
+   
+			var showEmptyView = ItemsView?.EmptyView != null && ItemsViewAdapter.ItemCount == itemCount;
 
 			var currentAdapter = GetAdapter();
 			if (showEmptyView && currentAdapter != _emptyViewAdapter)
@@ -647,6 +652,24 @@ namespace Xamarin.Forms.Platform.Android
 			{
 				ScrollHelper.UndoNextScrollAdjustment();
 			}
+		}
+
+		void AddOrUpdateScrollListener()
+		{
+			RemoveScrollListener();
+
+			_recyclerViewScrollListener = CreateScrollListener();
+			AddOnScrollListener(_recyclerViewScrollListener);
+		}
+
+		void RemoveScrollListener()
+		{
+			if (_recyclerViewScrollListener == null)
+				return;
+
+			_recyclerViewScrollListener.Dispose();
+			ClearOnScrollListeners();
+			_recyclerViewScrollListener = null;
 		}
 	}
 }

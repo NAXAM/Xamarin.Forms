@@ -1,25 +1,24 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using CoreGraphics;
+﻿using System.Collections;
 using Foundation;
 using UIKit;
 
 namespace Xamarin.Forms.Platform.iOS
 {
-	public class CarouselViewController : ItemsViewController
+	public class CarouselViewController : ItemsViewController<CarouselView>
 	{
-		CarouselView _carouselView;
-		ItemsViewLayout _layout;
+		readonly CarouselView _carouselView;
 		bool _viewInitialized;
 
 		public CarouselViewController(CarouselView itemsView, ItemsViewLayout layout) : base(itemsView, layout)
 		{
 			_carouselView = itemsView;
-			_layout = layout;
-			Delegator.CarouselViewController = this;
 			CollectionView.AllowsSelection = false;
 			CollectionView.AllowsMultipleSelection = false;
+		}
+
+		protected override UICollectionViewDelegateFlowLayout CreateDelegator()
+		{
+			return new CarouselViewDelegator(ItemsViewLayout, this);
 		}
 
 		public override UICollectionViewCell GetCell(UICollectionView collectionView, NSIndexPath indexPath)
@@ -60,6 +59,7 @@ namespace Xamarin.Forms.Platform.iOS
 		protected override void RegisterViewTypes()
 		{
 			CollectionView.RegisterClassForCell(typeof(CarouselTemplatedCell), CarouselTemplatedCell.ReuseId);
+			base.RegisterViewTypes();
 		}
 
 		internal void TearDown()
@@ -76,8 +76,32 @@ namespace Xamarin.Forms.Platform.iOS
 			_carouselView.SetIsDragging(false);
 		}
 
+		internal void UpdateIsScrolling(bool isScrolling)
+		{
+			_carouselView.IsScrolling = isScrolling;
+		}
+
 		void UpdateInitialPosition()
 		{
+			if (_carouselView.CurrentItem != null)
+			{
+				int position = 0;
+
+				var items = _carouselView.ItemsSource as IList;
+
+				for (int n = 0; n < items?.Count; n++)
+				{
+					if (items[n] == _carouselView.CurrentItem)
+					{
+						position = n;
+						break;
+					}
+				}
+
+				var initialPosition = position;
+				_carouselView.Position = initialPosition;
+			}
+
 			if (_carouselView.Position != 0)
 				_carouselView.ScrollTo(_carouselView.Position, -1, ScrollToPosition.Center, false);
 		}
